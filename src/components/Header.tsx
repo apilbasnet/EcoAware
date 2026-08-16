@@ -12,33 +12,15 @@ import {
   DropdownMenuTrigger 
 } from "@/components/ui/dropdown-menu"
 import { Badge } from "@/components/ui/badge"
-import { Web3Auth } from "@web3auth/modal"
-import { CHAIN_NAMESPACES, IProvider, WEB3AUTH_NETWORK } from "@web3auth/base"
-import { EthereumPrivateKeyProvider } from "@web3auth/ethereum-provider"
+import { Web3Auth, WEB3AUTH_NETWORK } from "@web3auth/modal"
 import { useMediaQuery } from "@/hooks/useMediaQuery"
 import { createUser, getUnreadNotifications, markNotificationAsRead, getUserByEmail, getUserBalance } from "@/utils/db/actions"
 
-const clientId = "BJKdDFkNtkWX87XqkuWrDu4rbkSvWyQZ5lswS0ucINxxcN0inRVW8zzKAywPPzgiOHP7_3PcfFwfpvcQvSdaLRs";
-
-const chainConfig = {
-  chainNamespace: CHAIN_NAMESPACES.EIP155,
-  chainId: "0xaa36a7",
-  rpcTarget: "https://rpc.ankr.com/eth_sepolia",
-  displayName: "Ethereum Sepolia Testnet",
-  blockExplorerUrl: "https://sepolia.etherscan.io",
-  ticker: "ETH",
-  tickerName: "Ethereum",
-  logo: "https://cryptologos.cc/logos/ethereum-eth-logo.png",
-};
-
-const privateKeyProvider = new EthereumPrivateKeyProvider({
-  config: { chainConfig },
-});
+const clientId = process.env.NEXT_PUBLIC_WEB3_AUTH_CLIENT_ID;
 
 const web3auth = new Web3Auth({
   clientId,
-  web3AuthNetwork: WEB3AUTH_NETWORK.TESTNET, // Changed from SAPPHIRE_MAINNET to TESTNET
-  privateKeyProvider,
+  web3AuthNetwork: WEB3AUTH_NETWORK.SAPPHIRE_DEVNET, 
 });
 
 interface HeaderProps {
@@ -47,7 +29,6 @@ interface HeaderProps {
 }
 
 export default function Header({ onMenuClick, totalEarnings }: HeaderProps) {
-  const [provider, setProvider] = useState<IProvider | null>(null);
   const [loggedIn, setLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
   const [userInfo, setUserInfo] = useState<any>(null);
@@ -57,12 +38,11 @@ export default function Header({ onMenuClick, totalEarnings }: HeaderProps) {
   const [balance, setBalance] = useState(0)
 
   console.log('user info', userInfo);
-  
+
   useEffect(() => {
     const init = async () => {
       try {
-        await web3auth.initModal();
-        setProvider(web3auth.provider);
+        await web3auth.init(); // was initModal() in v8
 
         if (web3auth.connected) {
           setLoggedIn(true);
@@ -138,8 +118,7 @@ export default function Header({ onMenuClick, totalEarnings }: HeaderProps) {
       return;
     }
     try {
-      const web3authProvider = await web3auth.connect();
-      setProvider(web3authProvider);
+      await web3auth.connect(); // provider is no longer returned directly — use web3auth.connection?.ethereumProvider if you need raw RPC access
       setLoggedIn(true);
       const user = await web3auth.getUserInfo();
       setUserInfo(user);
@@ -164,7 +143,6 @@ export default function Header({ onMenuClick, totalEarnings }: HeaderProps) {
     }
     try {
       await web3auth.logout();
-      setProvider(null);
       setLoggedIn(false);
       setUserInfo(null);
       localStorage.removeItem('userEmail');

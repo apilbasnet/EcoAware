@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'react-hot-toast'
 import { getWasteCollectionTasks, updateTaskStatus, saveReward, saveCollectedWaste, getUserByEmail } from '@/utils/db/actions'
-import { GoogleGenerativeAI } from "@google/generative-ai"
+import { GoogleGenAI, Type } from "@google/genai"
 
 // Make sure to set your Gemini API key in your environment variables
 const geminiApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
@@ -110,7 +110,7 @@ export default function CollectPage() {
     return dataUrl.split(',')[1]
   }
 
-  const handleVerify = async () => {
+const handleVerify = async () => {
     if (!selectedTask || !verificationImage || !user) {
       toast.error('Missing required information for verification.')
       return
@@ -119,38 +119,49 @@ export default function CollectPage() {
     setVerificationStatus('verifying')
     
     try {
-      const genAI = new GoogleGenerativeAI(geminiApiKey!)
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" })
+      const ai = new GoogleGenAI({ apiKey: geminiApiKey! })
 
       const base64Data = readFileAsBase64(verificationImage)
-
-      const imageParts = [
-        {
-          inlineData: {
-            data: base64Data,
-            mimeType: 'image/jpeg', // Adjust this if you know the exact type
-          },
-        },
-      ]
 
       const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
         1. Confirm if the waste type matches: ${selectedTask.wasteType}
         2. Estimate if the quantity matches: ${selectedTask.amount}
-        3. Your confidence level in this assessment (as a percentage)
-        
-        Respond in JSON format like this:
-        {
-          "wasteTypeMatch": true/false,
-          "quantityMatch": true/false,
-          "confidence": confidence level as a number between 0 and 1
-        }`
+        3. Your confidence level in this assessment (as a number between 0 and 1)`
 
-      const result = await model.generateContent([prompt, ...imageParts])
-      const response = await result.response
-      const text = response.text()
+      const result = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType: 'image/jpeg',
+                  data: base64Data,
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              wasteTypeMatch: { type: Type.BOOLEAN },
+              quantityMatch: { type: Type.BOOLEAN },
+              confidence: { type: Type.NUMBER },
+            },
+            required: ["wasteTypeMatch", "quantityMatch", "confidence"],
+          },
+        },
+      })
+
+      const text = result.text
       
       try {
-        const parsedResult = JSON.parse(text)
+        const parsedResult = JSON.parse(text!)
         setVerificationResult({
           wasteTypeMatch: parsedResult.wasteTypeMatch,
           quantityMatch: parsedResult.quantityMatch,
@@ -160,12 +171,9 @@ export default function CollectPage() {
         
         if (parsedResult.wasteTypeMatch && parsedResult.quantityMatch && parsedResult.confidence > 0.7) {
           await handleStatusChange(selectedTask.id, 'verified')
-          const earnedReward = Math.floor(Math.random() * 50) + 10 // Random reward between 10 and 59
+          const earnedReward = Math.floor(Math.random() * 50) + 10
           
-          // Save the reward
           await saveReward(user.id, earnedReward)
-
-          // Save the collected waste
           await saveCollectedWaste(selectedTask.id, user.id, parsedResult)
 
           setReward(earnedReward)
@@ -181,7 +189,6 @@ export default function CollectPage() {
         }
       } catch (error) {
         console.log(error);
-        
         console.error('Failed to parse JSON response:', text)
         setVerificationStatus('failure')
       }
