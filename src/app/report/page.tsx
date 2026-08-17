@@ -2,7 +2,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import {  MapPin, Upload, CheckCircle, Loader } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI, Type } from "@google/genai";
 import { StandaloneSearchBox,  useJsApiLoader } from '@react-google-maps/api'
 import { Libraries } from '@react-google-maps/api';
 import { createUser, getUserByEmail, createReport, getRecentReports } from '@/utils/db/actions';
@@ -99,39 +99,52 @@ export default function ReportPage() {
     setVerificationStatus('verifying')
     
     try {
-      const genAI = new GoogleGenerativeAI(geminiApiKey!);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const ai = new GoogleGenAI({ apiKey: geminiApiKey! });
 
       const base64Data = await readFileAsBase64(file);
 
-      const imageParts = [
-        {
-          inlineData: {
-            data: base64Data.split(',')[1],
-            mimeType: file.type,
-          },
-        },
-      ];
-
-      const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
+        const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
         1. The type of waste (e.g., plastic, paper, glass, metal, organic)
         2. An estimate of the quantity or amount (in kg or liters)
-        3. Your confidence level in this assessment (as a percentage)
-        
-        Respond in JSON format like this:
-        {
-          "wasteType": "type of waste",
-          "quantity": "estimated quantity with unit",
-          "confidence": confidence level as a number between 0 and 1
-        }`;
+        3. Your confidence level in this assessment (as a number between 0 and 1)`;
 
-      const result = await model.generateContent([prompt, ...imageParts]);
-      const response = await result.response;
-      const text = response.text();
+
+      const result = await ai.models.generateContent({
+        model: 'gemini-3.6-flash',
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: prompt },
+              {
+                inlineData: {
+                  mimeType: file.type,
+                  data: base64Data.split(',')[1],
+                },
+              },
+            ],
+          },
+        ],
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              wasteType: { type: Type.STRING },
+              quantity: { type: Type.STRING },
+              confidence: { type: Type.NUMBER },
+            },
+            required: ["wasteType", "quantity", "confidence"],
+          },
+        },
+
+      });
+
+      const text = result.text;
       
       try {
-        const parsedResult = JSON.parse(text);
-        if (parsedResult.wasteType && parsedResult.quantity && parsedResult.confidence) {
+        const parsedResult = JSON.parse(text!);
+        if (parsedResult.wasteType && parsedResult.quantity && parsedResult.confidence !== undefined) {
           setVerificationResult(parsedResult);
           setVerificationStatus('success');
           setNewReport({
