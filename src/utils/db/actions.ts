@@ -23,6 +23,25 @@ export async function getUserByEmail(email: string) {
     return null;
   }
 }
+export async function updateUserProfile(
+  userId: number,
+  name: string,
+  phone?: string,
+  address?: string
+) {
+  try {
+    const [updatedUser] = await db
+      .update(Users)
+      .set({ name, phone, address })
+      .where(eq(Users.id, userId))
+      .returning()
+      .execute();
+    return updatedUser;
+  } catch (error) {
+    console.error("Error updating user profile:", error);
+    throw error;
+  }
+}
 
 export async function createReport(
   userId: number,

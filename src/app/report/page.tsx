@@ -1,54 +1,110 @@
-'use client'
-import { useState, useCallback, useEffect } from 'react'
-import {  MapPin, Upload, CheckCircle, Loader } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+"use client";
+import { useState, useCallback, useEffect, useRef } from "react";
+import { MapPin, Upload, CheckCircle, Loader } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { GoogleGenAI, Type } from "@google/genai";
-import { StandaloneSearchBox,  useJsApiLoader } from '@react-google-maps/api'
-import { Libraries } from '@react-google-maps/api';
-import { createUser, getUserByEmail, createReport, getRecentReports } from '@/utils/db/actions';
-import { useRouter } from 'next/navigation';
-import { toast } from 'react-hot-toast'
+import { StandaloneSearchBox, useJsApiLoader } from "@react-google-maps/api";
+import { Libraries } from "@react-google-maps/api";
+import {
+  createUser,
+  getUserByEmail,
+  createReport,
+  getRecentReports,
+} from "@/utils/db/actions";
+import { useRouter } from "next/navigation";
+import { toast } from "react-hot-toast";
 
 const geminiApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
 const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
-const libraries: Libraries = ['places'];
+const libraries: Libraries = ["places"];
+
+type PlaceSelectEvent = Event & {
+  placePrediction: {
+    toPlace: () => {
+      fetchFields: (options: { fields: string[] }) => Promise<void>;
+      formattedAddress: string | null;
+    };
+  };
+};
 
 export default function ReportPage() {
-  const [user, setUser] = useState<{ id: number; email: string; name: string } | null>(null);
+  const [user, setUser] = useState<{
+    id: number;
+    email: string;
+    name: string;
+  } | null>(null);
   const router = useRouter();
 
-  const [reports, setReports] = useState<Array<{
-    id: number;
-    location: string;
-    wasteType: string;
-    amount: string;
-    createdAt: string;
-  }>>([]);
+  const [reports, setReports] = useState<
+    Array<{
+      id: number;
+      location: string;
+      wasteType: string;
+      amount: string;
+      createdAt: string;
+    }>
+  >([]);
 
   const [newReport, setNewReport] = useState({
-    location: '',
-    type: '',
-    amount: '',
-  })
+    location: "",
+    type: "",
+    amount: "",
+  });
 
-  const [file, setFile] = useState<File | null>(null)
-  const [preview, setPreview] = useState<string | null>(null)
-  const [verificationStatus, setVerificationStatus] = useState<'idle' | 'verifying' | 'success' | 'failure'>('idle')
+  const [file, setFile] = useState<File | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const [verificationStatus, setVerificationStatus] = useState<
+    "idle" | "verifying" | "success" | "failure"
+  >("idle");
   const [verificationResult, setVerificationResult] = useState<{
     wasteType: string;
     quantity: string;
     confidence: number;
-  } | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  } | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [searchBox, setSearchBox] = useState<google.maps.places.SearchBox | null>(null);
+  const [searchBox, setSearchBox] =
+    useState<google.maps.places.SearchBox | null>(null);
+
+  const autocompleteContainerRef = useRef<HTMLDivElement>(null);
+  const autocompleteElementRef = useRef<any>(null);
 
   const { isLoaded } = useJsApiLoader({
-    id: 'google-map-script',
+    id: "google-map-script",
     googleMapsApiKey: googleMapsApiKey!,
-    libraries: libraries
+    libraries: libraries,
   });
+
+useEffect(() => {
+  if (!isLoaded || !autocompleteContainerRef.current) return;
+  if (autocompleteElementRef.current) return;
+
+  const init = async () => {
+    // @ts-ignore
+    const { PlaceAutocompleteElement } = await google.maps.importLibrary("places");
+
+    const autocompleteElement = new PlaceAutocompleteElement();
+    autocompleteElement.id = 'location-autocomplete';
+
+    autocompleteElement.style.colorScheme = 'light';
+    autocompleteElement.style.backgroundColor = '#ffffff';
+
+    autocompleteElementRef.current = autocompleteElement;
+    autocompleteContainerRef.current!.appendChild(autocompleteElement);
+
+    autocompleteElement.addEventListener('gmp-select', async (event: google.maps.places.PlacePredictionSelectEvent) => {
+  const prediction = event.placePrediction.toPlace();
+  const { place } = await prediction.fetchFields({ fields: ['formattedAddress'] });
+  setNewReport(prev => ({
+    ...prev,
+    location: place.formattedAddress || '',
+  }));
+});
+  };
+
+  init();
+}, [isLoaded]);
 
   const onLoad = useCallback((ref: google.maps.places.SearchBox) => {
     setSearchBox(ref);
@@ -59,30 +115,32 @@ export default function ReportPage() {
       const places = searchBox.getPlaces();
       if (places && places.length > 0) {
         const place = places[0];
-        setNewReport(prev => ({
+        setNewReport((prev) => ({
           ...prev,
-          location: place.formatted_address || '',
+          location: place.formatted_address || "",
         }));
       }
     }
   };
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
-    const { name, value } = e.target
-    setNewReport({ ...newReport, [name]: value })
-  }
+  const handleInputChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
+  ) => {
+    const { name, value } = e.target;
+    setNewReport({ ...newReport, [name]: value });
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
-      const selectedFile = e.target.files[0]
-      setFile(selectedFile)
-      const reader = new FileReader()
+      const selectedFile = e.target.files[0];
+      setFile(selectedFile);
+      const reader = new FileReader();
       reader.onload = (e) => {
-        setPreview(e.target?.result as string)
-      }
-      reader.readAsDataURL(selectedFile)
+        setPreview(e.target?.result as string);
+      };
+      reader.readAsDataURL(selectedFile);
     }
-  }
+  };
 
   const readFileAsBase64 = (file: File): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -94,23 +152,22 @@ export default function ReportPage() {
   };
 
   const handleVerify = async () => {
-    if (!file) return
+    if (!file) return;
 
-    setVerificationStatus('verifying')
-    
+    setVerificationStatus("verifying");
+
     try {
       const ai = new GoogleGenAI({ apiKey: geminiApiKey! });
 
       const base64Data = await readFileAsBase64(file);
 
-        const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
+      const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
         1. The type of waste (e.g., plastic, paper, glass, metal, organic)
         2. An estimate of the quantity or amount (in kg or liters)
         3. Your confidence level in this assessment (as a number between 0 and 1)`;
 
-
       const result = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: "gemini-3.6-flash",
         contents: [
           {
             role: "user",
@@ -119,7 +176,7 @@ export default function ReportPage() {
               {
                 inlineData: {
                   mimeType: file.type,
-                  data: base64Data.split(',')[1],
+                  data: base64Data.split(",")[1],
                 },
               },
             ],
@@ -137,73 +194,77 @@ export default function ReportPage() {
             required: ["wasteType", "quantity", "confidence"],
           },
         },
-
       });
 
       const text = result.text;
-      
+
       try {
         const parsedResult = JSON.parse(text!);
-        if (parsedResult.wasteType && parsedResult.quantity && parsedResult.confidence !== undefined) {
+        if (
+          parsedResult.wasteType &&
+          parsedResult.quantity &&
+          parsedResult.confidence !== undefined
+        ) {
           setVerificationResult(parsedResult);
-          setVerificationStatus('success');
+          setVerificationStatus("success");
           setNewReport({
             ...newReport,
             type: parsedResult.wasteType,
-            amount: parsedResult.quantity
+            amount: parsedResult.quantity,
           });
         } else {
-          console.error('Invalid verification result:', parsedResult);
-          setVerificationStatus('failure');
+          console.error("Invalid verification result:", parsedResult);
+          setVerificationStatus("failure");
         }
       } catch (error) {
-        console.error('Failed to parse JSON response:', text);
-        setVerificationStatus('failure');
+        console.error("Failed to parse JSON response:", text);
+        setVerificationStatus("failure");
       }
     } catch (error) {
-      console.error('Error verifying waste:', error);
-      setVerificationStatus('failure');
+      console.error("Error verifying waste:", error);
+      setVerificationStatus("failure");
     }
-  }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (verificationStatus !== 'success' || !user) {
-      toast.error('Please verify the waste before submitting or log in.');
+    if (verificationStatus !== "success" || !user) {
+      toast.error("Please verify the waste before submitting or log in.");
       return;
     }
-    
+
     setIsSubmitting(true);
     try {
-      const report = await createReport(
+      const report = (await createReport(
         user.id,
         newReport.location,
         newReport.type,
         newReport.amount,
         preview || undefined,
-        verificationResult ? JSON.stringify(verificationResult) : undefined
-      ) as any;
-      
+        verificationResult ? JSON.stringify(verificationResult) : undefined,
+      )) as any;
+
       const formattedReport = {
         id: report.id,
         location: report.location,
         wasteType: report.wasteType,
         amount: report.amount,
-        createdAt: report.createdAt.toISOString().split('T')[0]
+        createdAt: report.createdAt.toISOString().split("T")[0],
       };
-      
+
       setReports([formattedReport, ...reports]);
-      setNewReport({ location: '', type: '', amount: '' });
+      setNewReport({ location: "", type: "", amount: "" });
       setFile(null);
       setPreview(null);
-      setVerificationStatus('idle');
+      setVerificationStatus("idle");
       setVerificationResult(null);
-      
 
-      toast.success(`Report submitted successfully! You've earned points for reporting waste.`);
+      toast.success(
+        `Report submitted successfully! You've earned points for reporting waste.`,
+      );
     } catch (error) {
-      console.error('Error submitting report:', error);
-      toast.error('Failed to submit report. Please try again.');
+      console.error("Error submitting report:", error);
+      toast.error("Failed to submit report. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -211,22 +272,22 @@ export default function ReportPage() {
 
   useEffect(() => {
     const checkUser = async () => {
-      const email = localStorage.getItem('userEmail');
+      const email = localStorage.getItem("userEmail");
       if (email) {
         let user = await getUserByEmail(email);
         if (!user) {
-          user = await createUser(email, 'Anonymous User');
+          user = await createUser(email, "Anonymous User");
         }
         setUser(user);
-        
+
         const recentReports = await getRecentReports();
-        const formattedReports = recentReports.map(report => ({
+        const formattedReports = recentReports.map((report) => ({
           ...report,
-          createdAt: report.createdAt.toISOString().split('T')[0]
+          createdAt: report.createdAt.toISOString().split("T")[0],
         }));
         setReports(formattedReports);
       } else {
-        router.push('/login'); 
+        router.push("/login");
       }
     };
     checkUser();
@@ -234,11 +295,19 @@ export default function ReportPage() {
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-semibold mb-6 text-gray-800">Report waste</h1>
-      
-      <form onSubmit={handleSubmit} className="bg-white p-8 rounded-2xl shadow-lg mb-12">
+      <h1 className="text-3xl font-semibold mb-6 text-gray-800">
+        Report waste
+      </h1>
+
+      <form
+        onSubmit={handleSubmit}
+        className="bg-white p-8 rounded-2xl shadow-lg mb-12"
+      >
         <div className="mb-8">
-          <label htmlFor="waste-image" className="block text-lg font-medium text-gray-700 mb-2">
+          <label
+            htmlFor="waste-image"
+            className="block text-lg font-medium text-gray-700 mb-2"
+          >
             Upload Waste Image
           </label>
           <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-xl hover:border-green-500 transition-colors duration-300">
@@ -250,7 +319,14 @@ export default function ReportPage() {
                   className="relative cursor-pointer bg-white rounded-md font-medium text-green-600 hover:text-green-500 focus-within:outline-none focus-within:ring-2 focus-within:ring-green-500"
                 >
                   <span>Upload a file</span>
-                  <input id="waste-image" name="waste-image" type="file" className="sr-only" onChange={handleFileChange} accept="image/*" />
+                  <input
+                    id="waste-image"
+                    name="waste-image"
+                    type="file"
+                    className="sr-only"
+                    onChange={handleFileChange}
+                    accept="image/*"
+                  />
                 </label>
                 <p className="pl-1">or drag and drop</p>
               </div>
@@ -258,37 +334,48 @@ export default function ReportPage() {
             </div>
           </div>
         </div>
-        
+
         {preview && (
           <div className="mt-4 mb-8">
-            <img src={preview} alt="Waste preview" className="max-w-full h-auto rounded-xl shadow-md" />
+            <img
+              src={preview}
+              alt="Waste preview"
+              className="max-w-full h-auto rounded-xl shadow-md"
+            />
           </div>
         )}
-        
-        <Button 
-          type="button" 
-          onClick={handleVerify} 
-          className="w-full mb-8 bg-blue-600 hover:bg-blue-700 text-white py-3 text-lg rounded-xl transition-colors duration-300" 
-          disabled={!file || verificationStatus === 'verifying'}
+
+        <Button
+          type="button"
+          onClick={handleVerify}
+          className="w-full mb-8 bg-blue-600 hover:bg-blue-700 text-white py-3 text-lg rounded-xl transition-colors duration-300"
+          disabled={!file || verificationStatus === "verifying"}
         >
-          {verificationStatus === 'verifying' ? (
+          {verificationStatus === "verifying" ? (
             <>
               <Loader className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" />
               Verifying...
             </>
-          ) : 'Verify Waste'}
+          ) : (
+            "Verify Waste"
+          )}
         </Button>
 
-        {verificationStatus === 'success' && verificationResult && (
+        {verificationStatus === "success" && verificationResult && (
           <div className="bg-green-50 border-l-4 border-green-400 p-4 mb-8 rounded-r-xl">
             <div className="flex items-center">
               <CheckCircle className="h-6 w-6 text-green-400 mr-3" />
               <div>
-                <h3 className="text-lg font-medium text-green-800">Verification Successful</h3>
+                <h3 className="text-lg font-medium text-green-800">
+                  Verification Successful
+                </h3>
                 <div className="mt-2 text-sm text-green-700">
                   <p>Waste Type: {verificationResult.wasteType}</p>
                   <p>Quantity: {verificationResult.quantity}</p>
-                  <p>Confidence: {(verificationResult.confidence * 100).toFixed(2)}%</p>
+                  <p>
+                    Confidence:{" "}
+                    {(verificationResult.confidence * 100).toFixed(2)}%
+                  </p>
                 </div>
               </div>
             </div>
@@ -297,24 +384,32 @@ export default function ReportPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
           <div>
-            <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-1">Location</label>
             {isLoaded ? (
-              <StandaloneSearchBox
-                onLoad={onLoad}
-                onPlacesChanged={onPlacesChanged}
-              >
-                <input
-                  type="text"
-                  id="location"
-                  name="location"
-                  value={newReport.location}
-                  onChange={handleInputChange}
-                  required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300"
-                  placeholder="Enter waste location"
+              <div>
+                <label
+                  htmlFor="location"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                >
+                  Location
+                </label>
+                <div
+                  ref={autocompleteContainerRef}
+                  className="[&_gmp-place-autocomplete]:w-full [&_gmp-place-autocomplete]:border [&_gmp-place-autocomplete]:border-gray-300 [&_gmp-place-autocomplete]:rounded-xl"
                 />
-              </StandaloneSearchBox>
+                {newReport.location && (
+                  <p className="text-xs text-gray-500 mt-1">
+                    Selected: {newReport.location}
+                  </p>
+                )}
+              </div>
             ) : (
+              <div>
+              <label
+                  htmlFor="location"
+                  className="block text-sm font-medium text-gray-700 mb-1"
+                  >
+                  Location
+                </label>
               <input
                 type="text"
                 id="location"
@@ -325,10 +420,16 @@ export default function ReportPage() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300"
                 placeholder="Enter waste location"
               />
+            </div>
             )}
           </div>
           <div>
-            <label htmlFor="type" className="block text-sm font-medium text-gray-700 mb-1">Waste Type</label>
+            <label
+              htmlFor="type"
+              className="block text-sm font-medium text-gray-700 mb-1"
+            >
+              Waste Type
+            </label>
             <input
               type="text"
               id="type"
@@ -342,7 +443,12 @@ export default function ReportPage() {
             />
           </div>
           <div>
-            <label htmlFor="amount" className="block text-sm font-medium text-gray-700 mb-1">Estimated Amount</label>
+            <label
+              htmlFor="amount"
+              className="block text-sm font-medium text-gray-700 mb-1"
+            >
+              Estimated Amount
+            </label>
             <input
               type="text"
               id="amount"
@@ -356,8 +462,8 @@ export default function ReportPage() {
             />
           </div>
         </div>
-        <Button 
-          type="submit" 
+        <Button
+          type="submit"
           className="w-full bg-green-600 hover:bg-green-700 text-white py-3 text-lg rounded-xl transition-colors duration-300 flex items-center justify-center"
           disabled={isSubmitting}
         >
@@ -366,32 +472,53 @@ export default function ReportPage() {
               <Loader className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" />
               Submitting...
             </>
-          ) : 'Submit Report'}
+          ) : (
+            "Submit Report"
+          )}
         </Button>
       </form>
 
-      <h2 className="text-3xl font-semibold mb-6 text-gray-800">Recent Reports</h2>
+      <h2 className="text-3xl font-semibold mb-6 text-gray-800">
+        Recent Reports
+      </h2>
       <div className="bg-white rounded-2xl shadow-lg overflow-hidden">
         <div className="max-h-96 overflow-y-auto">
           <table className="w-full">
             <thead className="bg-gray-50 sticky top-0">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Location
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Type
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Amount
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Date
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
               {reports.map((report) => (
-                <tr key={report.id} className="hover:bg-gray-50 transition-colors duration-200">
+                <tr
+                  key={report.id}
+                  className="hover:bg-gray-50 transition-colors duration-200"
+                >
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                     <MapPin className="inline-block w-4 h-4 mr-2 text-green-500" />
                     {report.location}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{report.wasteType}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{report.amount}</td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{report.createdAt}</td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {report.wasteType}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {report.amount}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                    {report.createdAt}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -399,5 +526,5 @@ export default function ReportPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
