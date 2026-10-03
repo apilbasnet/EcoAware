@@ -3,7 +3,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { MapPin, Upload, CheckCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { GoogleGenAI, Type } from "@google/genai";
-import { StandaloneSearchBox, useJsApiLoader } from "@react-google-maps/api";
+import { useJsApiLoader } from "@react-google-maps/api";
 import { Libraries } from "@react-google-maps/api";
 import {
   createUser,
@@ -11,30 +11,21 @@ import {
   createReport,
   getRecentReports,
 } from "@/utils/db/actions";
-import { useRouter } from "next/navigation";
 import { toast } from "react-hot-toast";
+import { useWeb3Auth } from "@/hooks/useWeb3Auth";
 
 const geminiApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
 const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
 
 const libraries: Libraries = ["places"];
 
-type PlaceSelectEvent = Event & {
-  placePrediction: {
-    toPlace: () => {
-      fetchFields: (options: { fields: string[] }) => Promise<void>;
-      formattedAddress: string | null;
-    };
-  };
-};
-
 export default function ReportPage() {
+  const { loggedIn, loading: authLoading, login } = useWeb3Auth();
   const [user, setUser] = useState<{
     id: number;
     email: string;
     name: string;
   } | null>(null);
-  const router = useRouter();
 
   const [reports, setReports] = useState<
     Array<{
@@ -64,9 +55,6 @@ export default function ReportPage() {
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [searchBox, setSearchBox] =
-    useState<google.maps.places.SearchBox | null>(null);
-
   const autocompleteContainerRef = useRef<HTMLDivElement>(null);
   const autocompleteElementRef = useRef<any>(null);
 
@@ -76,52 +64,62 @@ export default function ReportPage() {
     libraries: libraries,
   });
 
-useEffect(() => {
-  if (!isLoaded || !autocompleteContainerRef.current) return;
-  if (autocompleteElementRef.current) return;
+  // Single source of truth for loading the current user + their reports
+  useEffect(() => {
+    const checkUser = async () => {
+      const email = localStorage.getItem("userEmail");
+      if (email) {
+        let dbUser = await getUserByEmail(email);
+        if (!dbUser) {
+          dbUser = await createUser(email, "Anonymous User");
+        }
+        setUser(dbUser);
 
-  const init = async () => {
-    // @ts-ignore
-    const { PlaceAutocompleteElement } = await google.maps.importLibrary("places");
-
-    const autocompleteElement = new PlaceAutocompleteElement();
-    autocompleteElement.id = 'location-autocomplete';
-
-    autocompleteElement.style.colorScheme = 'light';
-    autocompleteElement.style.backgroundColor = '#ffffff';
-
-    autocompleteElementRef.current = autocompleteElement;
-    autocompleteContainerRef.current!.appendChild(autocompleteElement);
-
-    autocompleteElement.addEventListener('gmp-select', async (event: google.maps.places.PlacePredictionSelectEvent) => {
-  const prediction = event.placePrediction.toPlace();
-  const { place } = await prediction.fetchFields({ fields: ['formattedAddress'] });
-  setNewReport(prev => ({
-    ...prev,
-    location: place.formattedAddress || '',
-  }));
-});
-  };
-
-  init();
-}, [isLoaded]);
-
-  const onLoad = useCallback((ref: google.maps.places.SearchBox) => {
-    setSearchBox(ref);
-  }, []);
-
-  const onPlacesChanged = () => {
-    if (searchBox) {
-      const places = searchBox.getPlaces();
-      if (places && places.length > 0) {
-        const place = places[0];
-        setNewReport((prev) => ({
-          ...prev,
-          location: place.formatted_address || "",
+        const recentReports = await getRecentReports();
+        const formattedReports = recentReports.map((report) => ({
+          ...report,
+          createdAt: report.createdAt.toISOString().split("T")[0],
         }));
+        setReports(formattedReports);
       }
-    }
-  };
+    };
+    checkUser();
+  }, [loggedIn]); // re-run once login completes, so `user` populates right after login
+
+  // Mount Google Places autocomplete once script is loaded
+  useEffect(() => {
+    if (!isLoaded || !autocompleteContainerRef.current) return;
+    if (autocompleteElementRef.current) return;
+
+    const init = async () => {
+      // @ts-ignore
+      const { PlaceAutocompleteElement } = await google.maps.importLibrary("places");
+
+      const autocompleteElement = new PlaceAutocompleteElement();
+      autocompleteElement.id = "location-autocomplete";
+      autocompleteElement.style.colorScheme = "light";
+      autocompleteElement.style.backgroundColor = "#ffffff";
+
+      autocompleteElementRef.current = autocompleteElement;
+      autocompleteContainerRef.current!.appendChild(autocompleteElement);
+
+      autocompleteElement.addEventListener(
+        "gmp-select",
+        async (event: google.maps.places.PlacePredictionSelectEvent) => {
+          const prediction = event.placePrediction.toPlace();
+          const { place } = await prediction.fetchFields({
+            fields: ["formattedAddress"],
+          });
+          setNewReport((prev) => ({
+            ...prev,
+            location: place.formattedAddress || "",
+          }));
+        },
+      );
+    };
+
+    init();
+  }, [isLoaded]);
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
@@ -152,6 +150,11 @@ useEffect(() => {
   };
 
   const handleVerify = async () => {
+    if (!loggedIn) {
+      toast.error("Please log in to verify waste.");
+      login();
+      return;
+    }
     if (!file) return;
 
     setVerificationStatus("verifying");
@@ -228,8 +231,13 @@ useEffect(() => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!loggedIn) {
+      toast.error("Please log in to submit a report.");
+      login();
+      return;
+    }
     if (verificationStatus !== "success" || !user) {
-      toast.error("Please verify the waste before submitting or log in.");
+      toast.error("Please verify the waste before submitting.");
       return;
     }
 
@@ -270,34 +278,34 @@ useEffect(() => {
     }
   };
 
-  useEffect(() => {
-    const checkUser = async () => {
-      const email = localStorage.getItem("userEmail");
-      if (email) {
-        let user = await getUserByEmail(email);
-        if (!user) {
-          user = await createUser(email, "Anonymous User");
-        }
-        setUser(user);
+  // All hooks are declared above this line — the only remaining conditional
+  // return is for the initial auth-loading spinner, which is safe since it
+  // doesn't depend on any state that changes hook order.
 
-        const recentReports = await getRecentReports();
-        const formattedReports = recentReports.map((report) => ({
-          ...report,
-          createdAt: report.createdAt.toISOString().split("T")[0],
-        }));
-        setReports(formattedReports);
-      } else {
-        router.push("/login");
-      }
-    };
-    checkUser();
-  }, [router]);
+  if (authLoading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <Loader className="animate-spin h-8 w-8 text-gray-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <h1 className="text-3xl font-semibold mb-6 text-gray-800">
         Report waste
       </h1>
+
+      {!loggedIn && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-center justify-between flex-wrap gap-3">
+          <p className="text-sm text-amber-800">
+            You're viewing the report form. Log in to upload, verify, and submit a report.
+          </p>
+          <Button onClick={login} className="bg-green-600 hover:bg-green-700 text-white">
+            Log In
+          </Button>
+        </div>
+      )}
 
       <form
         onSubmit={handleSubmit}
@@ -310,7 +318,11 @@ useEffect(() => {
           >
             Upload Waste Image
           </label>
-          <div className="mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-xl hover:border-green-500 transition-colors duration-300">
+          <div
+            className={`mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-xl transition-colors duration-300 ${
+              !loggedIn ? "opacity-50 pointer-events-none" : "hover:border-green-500"
+            }`}
+          >
             <div className="space-y-1 text-center">
               <Upload className="mx-auto h-12 w-12 text-gray-400" />
               <div className="flex text-sm text-gray-600">
@@ -326,6 +338,7 @@ useEffect(() => {
                     className="sr-only"
                     onChange={handleFileChange}
                     accept="image/*"
+                    disabled={!loggedIn}
                   />
                 </label>
                 <p className="pl-1">or drag and drop</p>
@@ -349,7 +362,7 @@ useEffect(() => {
           type="button"
           onClick={handleVerify}
           className="w-full mb-8 bg-blue-600 hover:bg-blue-700 text-white py-3 text-lg rounded-xl transition-colors duration-300"
-          disabled={!file || verificationStatus === "verifying"}
+          disabled={!file || verificationStatus === "verifying" || !loggedIn}
         >
           {verificationStatus === "verifying" ? (
             <>
@@ -394,7 +407,9 @@ useEffect(() => {
                 </label>
                 <div
                   ref={autocompleteContainerRef}
-                  className="[&_gmp-place-autocomplete]:w-full [&_gmp-place-autocomplete]:border [&_gmp-place-autocomplete]:border-gray-300 [&_gmp-place-autocomplete]:rounded-xl"
+                  className={`[&_gmp-place-autocomplete]:w-full [&_gmp-place-autocomplete]:border [&_gmp-place-autocomplete]:border-gray-300 [&_gmp-place-autocomplete]:rounded-xl ${
+                    !loggedIn ? "opacity-50 pointer-events-none" : ""
+                  }`}
                 />
                 {newReport.location && (
                   <p className="text-xs text-gray-500 mt-1">
@@ -404,23 +419,24 @@ useEffect(() => {
               </div>
             ) : (
               <div>
-              <label
+                <label
                   htmlFor="location"
                   className="block text-sm font-medium text-gray-700 mb-1"
-                  >
+                >
                   Location
                 </label>
-              <input
-                type="text"
-                id="location"
-                name="location"
-                value={newReport.location}
-                onChange={handleInputChange}
-                required
-                className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300"
-                placeholder="Enter waste location"
-              />
-            </div>
+                <input
+                  type="text"
+                  id="location"
+                  name="location"
+                  value={newReport.location}
+                  onChange={handleInputChange}
+                  required
+                  disabled={!loggedIn}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 disabled:opacity-50"
+                  placeholder="Enter waste location"
+                />
+              </div>
             )}
           </div>
           <div>
@@ -437,7 +453,8 @@ useEffect(() => {
               value={newReport.type}
               onChange={handleInputChange}
               required
-              className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 bg-gray-100"
+              disabled={!loggedIn}
+              className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 bg-gray-100 disabled:opacity-50"
               placeholder="Verified waste type"
               readOnly
             />
@@ -456,7 +473,8 @@ useEffect(() => {
               value={newReport.amount}
               onChange={handleInputChange}
               required
-              className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 bg-gray-100"
+              disabled={!loggedIn}
+              className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 bg-gray-100 disabled:opacity-50"
               placeholder="Verified amount"
               readOnly
             />
@@ -465,7 +483,7 @@ useEffect(() => {
         <Button
           type="submit"
           className="w-full bg-green-600 hover:bg-green-700 text-white py-3 text-lg rounded-xl transition-colors duration-300 flex items-center justify-center"
-          disabled={isSubmitting}
+          disabled={isSubmitting || !loggedIn}
         >
           {isSubmitting ? (
             <>

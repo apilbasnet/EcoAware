@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input'
 import { toast } from 'react-hot-toast'
 import { getWasteCollectionTasks, updateTaskStatus, saveReward, saveCollectedWaste, getUserByEmail } from '@/utils/db/actions'
 import { GoogleGenAI, Type } from "@google/genai"
+import { useWeb3Auth } from '@/hooks/useWeb3Auth'
 
 // Make sure to set your Gemini API key in your environment variables
 const geminiApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY
@@ -23,6 +24,8 @@ type CollectionTask = {
 const ITEMS_PER_PAGE = 5
 
 export default function CollectPage() {
+  const { loggedIn, login } = useWeb3Auth()
+  
   const [tasks, setTasks] = useState<CollectionTask[]>([])
   const [loading, setLoading] = useState(true)
   const [hoveredWasteType, setHoveredWasteType] = useState<string | null>(null)
@@ -42,11 +45,8 @@ export default function CollectPage() {
             setUser(fetchedUser)
           } else {
             toast.error('User not found. Please log in again.')
-            // Redirect to login page or handle this case appropriately
           }
         } else {
-          toast.error('User not logged in. Please log in.')
-          // Redirect to login page or handle this case appropriately
         }
 
         // Fetch tasks
@@ -76,6 +76,7 @@ export default function CollectPage() {
   const handleStatusChange = async (taskId: number, newStatus: CollectionTask['status']) => {
     if (!user) {
       toast.error('Please log in to collect waste.')
+      login()
       return
     }
 
@@ -112,10 +113,14 @@ export default function CollectPage() {
 
 const handleVerify = async () => {
     if (!selectedTask || !verificationImage || !user) {
+      if (!user) {
+        toast.error('Please log in to verify this collection.')
+        login()
+        return
+      }
       toast.error('Missing required information for verification.')
       return
     }
-
     setVerificationStatus('verifying')
     
     try {
