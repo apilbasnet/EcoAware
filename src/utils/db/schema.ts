@@ -3,9 +3,11 @@ import { integer, varchar, pgTable, serial, text, timestamp, jsonb, boolean } fr
 // Users table
 export const Users = pgTable("users", {
   id: serial("id").primaryKey(),
-  email: varchar("email", { length: 255 }).notNull().unique(),
+  email: varchar("email", { length: 255 }).unique().notNull(),
   name: varchar("name", { length: 255 }).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  phone: varchar("phone", { length: 20 }),
+  address: text("address"),
+  createdAt: timestamp("created_at").defaultNow(),
 });
 
 // Reports table

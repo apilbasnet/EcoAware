@@ -39,9 +39,9 @@ export default function Home() {
   useEffect(() => {
     async function fetchImpactData() {
       try {
-        const reports = await getRecentReports(100);  // Fetch last 100 reports
+        const reports = await getRecentReports(100); 
         const rewards = await getAllRewards();
-        const tasks = await getWasteCollectionTasks(100);  // Fetch last 100 tasks
+        const tasks = await getWasteCollectionTasks(100); 
 
         const wasteCollected = tasks.reduce((total, task) => {
           const match = task.amount.match(/(\d+(\.\d+)?)/);
@@ -51,13 +51,13 @@ export default function Home() {
 
         const reportsSubmitted = reports.length;
         const tokensEarned = rewards.reduce((total, reward) => total + (reward.points || 0), 0);
-        const co2Offset = wasteCollected * 0.5;  // Assuming 0.5 kg CO2 offset per kg of waste
+        const co2Offset = wasteCollected * 0.5; 
 
         setImpactData({
-          wasteCollected: Math.round(wasteCollected * 10) / 10, // Round to 1 decimal place
+          wasteCollected: Math.round(wasteCollected * 10) / 10,
           reportsSubmitted,
           tokensEarned,
-          co2Offset: Math.round(co2Offset * 10) / 10 // Round to 1 decimal place
+          co2Offset: Math.round(co2Offset * 10) / 10
         });
       } catch (error) {
         console.error("Error fetching impact data:", error);
@@ -83,7 +83,7 @@ export default function Home() {
       <section className="text-center mb-20">
         <AnimatedGlobe />
         <h1 className="text-6xl font-bold mb-6 text-gray-800 tracking-tight">
-          Zero-to-Hero <span className="text-green-600">Waste Management</span>
+          Eco-Aware <span className="text-green-600">Waste Management</span>
         </h1>
         <p className="text-xl text-gray-600 max-w-2xl mx-auto leading-relaxed mb-8">
           Join our community in making waste management more efficient and rewarding!
