@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { GoogleGenAI, Type } from "@google/genai";
 import { useJsApiLoader } from "@react-google-maps/api";
 import { Libraries } from "@react-google-maps/api";
+import { WASTE_TYPES } from "@/utils/Wastecategories";
 import {
   createUser,
   getUserByEmail,
@@ -13,6 +14,7 @@ import {
 } from "@/utils/db/actions";
 import { toast } from "react-hot-toast";
 import { useWeb3Auth } from "@/hooks/useWeb3Auth";
+import { generateWithFallback, isQuotaError } from "@/utils/GeminiModels";
 
 const geminiApiKey = process.env.NEXT_PUBLIC_GEMINI_API_KEY;
 const googleMapsApiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
@@ -88,22 +90,27 @@ export default function ReportPage() {
 
   // Mount Google Places autocomplete once script is loaded
   useEffect(() => {
-    if (!isLoaded || !autocompleteContainerRef.current) return;
-    if (autocompleteElementRef.current) return;
+    if (!isLoaded || authLoading) return;
+    const container = autocompleteContainerRef.current;
+    if (!container) return;
+
+    let cancelled = false;
+    let element: any;
 
     const init = async () => {
-      // @ts-ignore
-      const { PlaceAutocompleteElement } = await google.maps.importLibrary("places");
+      const { PlaceAutocompleteElement } = await google.maps.importLibrary(
+        "places",
+      );
+      if (cancelled) return;
 
-      const autocompleteElement = new PlaceAutocompleteElement();
-      autocompleteElement.id = "location-autocomplete";
-      autocompleteElement.style.colorScheme = "light";
-      autocompleteElement.style.backgroundColor = "#ffffff";
+      element = new PlaceAutocompleteElement();
+      element.id = "location-autocomplete";
+      element.style.colorScheme = "light";
+      element.style.backgroundColor = "#ffffff";
+      autocompleteElementRef.current = element;
+      container.appendChild(element);
 
-      autocompleteElementRef.current = autocompleteElement;
-      autocompleteContainerRef.current!.appendChild(autocompleteElement);
-
-      autocompleteElement.addEventListener(
+      element.addEventListener(
         "gmp-select",
         async (event: google.maps.places.PlacePredictionSelectEvent) => {
           const prediction = event.placePrediction.toPlace();
@@ -119,7 +126,13 @@ export default function ReportPage() {
     };
 
     init();
-  }, [isLoaded]);
+
+    return () => {
+      cancelled = true;
+      element?.remove();
+      autocompleteElementRef.current = null;
+    };
+  }, [isLoaded, authLoading]);
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
@@ -163,14 +176,16 @@ export default function ReportPage() {
       const ai = new GoogleGenAI({ apiKey: geminiApiKey! });
 
       const base64Data = await readFileAsBase64(file);
-
       const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
-        1. The type of waste (e.g., plastic, paper, glass, metal, organic)
-        2. An estimate of the quantity or amount (in kg or liters)
-        3. Your confidence level in this assessment (as a number between 0 and 1)`;
+  1. The waste category. It must be exactly one of: ${WASTE_TYPES.join(", ")}.
+     Use "hazardous" for chemicals, batteries, paint, pesticides, or other toxic items.
+     Use "medical" for syringes, bandages, medicines, or other clinical waste.
+     Use "e-waste" for phones, cables, appliances, and other electronics.
+     If the image does not clearly show waste or discarded items (for example people, animals, scenery, screenshots, or clean objects), answer "none".
+  2. An estimate of the quantity as a single number in kg, for example "2.5 kg" (use "0 kg" if the answer is "none")
+  3. Your confidence level in this assessment (as a number between 0 and 1)`;
 
-      const result = await ai.models.generateContent({
-        model: "gemini-3.6-flash",
+      const result = await generateWithFallback(ai, {
         contents: [
           {
             role: "user",
@@ -190,7 +205,11 @@ export default function ReportPage() {
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              wasteType: { type: Type.STRING },
+              wasteType: {
+                type: Type.STRING,
+                format: "enum",
+                enum: [...WASTE_TYPES],
+              },
               quantity: { type: Type.STRING },
               confidence: { type: Type.NUMBER },
             },
@@ -203,11 +222,15 @@ export default function ReportPage() {
 
       try {
         const parsedResult = JSON.parse(text!);
-        if (
+
+        const isValidWaste =
           parsedResult.wasteType &&
-          parsedResult.quantity &&
-          parsedResult.confidence !== undefined
-        ) {
+          parsedResult.wasteType.toLowerCase() !== "none" &&
+          parseFloat(parsedResult.quantity) > 0 &&
+          typeof parsedResult.confidence === "number" &&
+          parsedResult.confidence > 0.5;
+
+        if (isValidWaste) {
           setVerificationResult(parsedResult);
           setVerificationStatus("success");
           setNewReport({
@@ -216,8 +239,16 @@ export default function ReportPage() {
             amount: parsedResult.quantity,
           });
         } else {
-          console.error("Invalid verification result:", parsedResult);
+          console.error(
+            "Image does not appear to show identifiable waste:",
+            parsedResult,
+          );
+          setVerificationResult(null);
+          setNewReport((prev) => ({ ...prev, type: "", amount: "" }));
           setVerificationStatus("failure");
+          toast.error(
+            "Couldn't identify waste in this image. Please upload a clearer photo of the waste.",
+          );
         }
       } catch (error) {
         console.error("Failed to parse JSON response:", text);
@@ -225,6 +256,11 @@ export default function ReportPage() {
       }
     } catch (error) {
       console.error("Error verifying waste:", error);
+      toast.error(
+        isQuotaError(error)
+          ? "AI verification has hit its daily limit. Please try again later."
+          : "Verification failed. Please try again.",
+      );
       setVerificationStatus("failure");
     }
   };
@@ -238,6 +274,16 @@ export default function ReportPage() {
     }
     if (verificationStatus !== "success" || !user) {
       toast.error("Please verify the waste before submitting.");
+      return;
+    }
+    if (!newReport.location.trim()) {
+      toast.error("Please select a location from the suggestions.");
+      return;
+    }
+    if (!newReport.type || !newReport.amount) {
+      toast.error(
+        "Waste type and amount are missing. Please verify the waste first.",
+      );
       return;
     }
 
@@ -271,16 +317,17 @@ export default function ReportPage() {
         `Report submitted successfully! You've earned points for reporting waste.`,
       );
     } catch (error) {
-      console.error("Error submitting report:", error);
-      toast.error("Failed to submit report. Please try again.");
+      console.error("Error verifying waste:", error);
+      if (isQuotaError(error)) {
+        toast.error(
+          "AI verification has hit its daily limit. Please try again later.",
+        );
+      }
+      setVerificationStatus("failure");
     } finally {
       setIsSubmitting(false);
     }
   };
-
-  // All hooks are declared above this line — the only remaining conditional
-  // return is for the initial auth-loading spinner, which is safe since it
-  // doesn't depend on any state that changes hook order.
 
   if (authLoading) {
     return (
@@ -299,9 +346,13 @@ export default function ReportPage() {
       {!loggedIn && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6 flex items-center justify-between flex-wrap gap-3">
           <p className="text-sm text-amber-800">
-            You're viewing the report form. Log in to upload, verify, and submit a report.
+            You're viewing the report form. Log in to upload, verify, and submit
+            a report.
           </p>
-          <Button onClick={login} className="bg-green-600 hover:bg-green-700 text-white">
+          <Button
+            onClick={login}
+            className="bg-green-600 hover:bg-green-700 text-white"
+          >
             Log In
           </Button>
         </div>
@@ -320,7 +371,9 @@ export default function ReportPage() {
           </label>
           <div
             className={`mt-1 flex justify-center px-6 pt-5 pb-6 border-2 border-gray-300 border-dashed rounded-xl transition-colors duration-300 ${
-              !loggedIn ? "opacity-50 pointer-events-none" : "hover:border-green-500"
+              !loggedIn
+                ? "opacity-50 pointer-events-none"
+                : "hover:border-green-500"
             }`}
           >
             <div className="space-y-1 text-center">
@@ -483,7 +536,13 @@ export default function ReportPage() {
         <Button
           type="submit"
           className="w-full bg-green-600 hover:bg-green-700 text-white py-3 text-lg rounded-xl transition-colors duration-300 flex items-center justify-center"
-          disabled={isSubmitting || !loggedIn}
+          disabled={
+            isSubmitting ||
+            !loggedIn ||
+            !newReport.location ||
+            !newReport.type ||
+            !newReport.amount
+          }
         >
           {isSubmitting ? (
             <>
@@ -491,7 +550,7 @@ export default function ReportPage() {
               Submitting...
             </>
           ) : (
-            "Submit Report"
+            "Report"
           )}
         </Button>
       </form>

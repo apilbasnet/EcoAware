@@ -49,7 +49,6 @@ export async function createReport(
   wasteType: string,
   amount: string,
   imageUrl?: string,
-  type?: string,
   verificationResult?: any
 ) {
   try {
@@ -238,7 +237,7 @@ export async function getRecentReports(limit: number = 10) {
   }
 }
 
-export async function getWasteCollectionTasks(limit: number = 20) {
+export async function getWasteCollectionTasks(limit: number = 100) {
   try {
     const tasks = await db
       .select({
@@ -251,12 +250,13 @@ export async function getWasteCollectionTasks(limit: number = 20) {
         collectorId: Reports.collectorId,
       })
       .from(Reports)
+      .orderBy(desc(Reports.createdAt))
       .limit(limit)
       .execute();
 
     return tasks.map(task => ({
       ...task,
-      date: task.date.toISOString().split('T')[0], // Format date as YYYY-MM-DD
+      date: task.date.toISOString().split('T')[0], 
     }));
   } catch (error) {
     console.error("Error fetching waste collection tasks:", error);
