@@ -1,4 +1,4 @@
-import { WASTE_TYPES, WasteType } from './Wastecategories'
+import { CLASS_NAMES, WasteType } from './wasteCategories'
 
 export type PriorityTask = {
   wasteType: string
@@ -10,30 +10,37 @@ export type PriorityTask = {
 // Weights (project-design choice, must sum to 1)
 export const PRIORITY_WEIGHTS = { urgency: 0.5, age: 0.3, quantity: 0.2 }
 
-// Operational policy: urgency per waste category (0-100)
 export const URGENCY_POLICY: Record<WasteType, number> = {
-  hazardous: 100,
-  medical: 100,
-  'e-waste': 80,
-  organic: 60,
-  metal: 50,
-  glass: 50,
-  plastic: 40,
+  battery: 100, 
+  biological: 60, 
+  'brown-glass': 50,
+  'green-glass': 50,
+  'white-glass': 50,
+  cardboard: 30,
   paper: 30,
+  clothes: 20, 
+  shoes: 20,
+  metal: 50,
+  plastic: 40,
+  trash: 50, 
 }
 const DEFAULT_URGENCY = 50
 
-// Aliases so older free-text reports (before categories were fixed) still map correctly
-const URGENCY_ALIASES: [keyword: string, category: WasteType][] = [
-  ['chemical', 'hazardous'],
-  ['toxic', 'hazardous'],
-  ['battery', 'hazardous'],
-  ['biomedical', 'medical'],
-  ['syringe', 'medical'],
-  ['hospital', 'medical'],
-  ['electronic', 'e-waste'],
-  ['ewaste', 'e-waste'],
-  ['e waste', 'e-waste'],
+// Aliases for older free-text reports created before the fixed class list
+const URGENCY_ALIASES: [keyword: string, score: number][] = [
+  ['chemical', 100],
+  ['toxic', 100],
+  ['hazardous', 100],
+  ['medical', 100],
+  ['biomedical', 100],
+  ['syringe', 100],
+  ['hospital', 100],
+  ['electronic', 80],
+  ['ewaste', 80],
+  ['e-waste', 80],
+  ['e waste', 80],
+  ['organic', 60],
+  ['glass', 50],
 ]
 
 // Configurable bounds
@@ -45,10 +52,19 @@ const clamp = (v: number, min = 0, max = 100) =>
   Number.isNaN(v) ? min : Math.min(max, Math.max(min, v))
 
 export function urgencyScore(wasteType: string): number {
-  const t = wasteType.toLowerCase()
+  const t = wasteType.toLowerCase().trim()
+
+  // Fast path: exact match against the model's classes (all new reports).
+  // hasOwnProperty avoids false hits on inherited names like "constructor".
+  if (Object.prototype.hasOwnProperty.call(URGENCY_POLICY, t)) {
+    return URGENCY_POLICY[t as WasteType]
+  }
+
+  // Fallback: substring/alias matching for older free-text reports.
+  // The highest match wins, so "medical plastic" scores as medical.
   const matches = [
-    ...WASTE_TYPES.filter(k => t.includes(k)).map(k => URGENCY_POLICY[k]),
-    ...URGENCY_ALIASES.filter(([k]) => t.includes(k)).map(([, c]) => URGENCY_POLICY[c]),
+    ...CLASS_NAMES.filter((k) => t.includes(k)).map((k) => URGENCY_POLICY[k]),
+    ...URGENCY_ALIASES.filter(([k]) => t.includes(k)).map(([, score]) => score),
   ]
   return matches.length ? Math.max(...matches) : DEFAULT_URGENCY
 }
