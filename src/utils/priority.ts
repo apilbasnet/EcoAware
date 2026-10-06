@@ -1,6 +1,4 @@
-import { CLASS_NAMES } from './wasteClassifier'
-
-export type WasteType = (typeof CLASS_NAMES)[number]
+import { CLASS_NAMES, WasteType } from './wasteCategories'
 
 export type PriorityTask = {
   wasteType: string
@@ -13,21 +11,22 @@ export type PriorityTask = {
 export const PRIORITY_WEIGHTS = { urgency: 0.5, age: 0.3, quantity: 0.2 }
 
 export const URGENCY_POLICY: Record<WasteType, number> = {
-  battery: 100,        // hazardous material — highest priority
-  biological: 60,      // organic/food waste — decomposes, attracts pests
+  battery: 100, 
+  biological: 60, 
   'brown-glass': 50,
   'green-glass': 50,
   'white-glass': 50,
   cardboard: 30,
   paper: 30,
-  clothes: 20,         // textile — low urgency, slow to degrade/smell
+  clothes: 20, 
   shoes: 20,
   metal: 50,
   plastic: 40,
-  trash: 50,           // unidentified/mixed — treat as medium by default
+  trash: 50, 
 }
 const DEFAULT_URGENCY = 50
 
+// Aliases for older free-text reports created before the fixed class list
 const URGENCY_ALIASES: [keyword: string, score: number][] = [
   ['chemical', 100],
   ['toxic', 100],
@@ -41,6 +40,7 @@ const URGENCY_ALIASES: [keyword: string, score: number][] = [
   ['e-waste', 80],
   ['e waste', 80],
   ['organic', 60],
+  ['glass', 50],
 ]
 
 // Configurable bounds
@@ -54,15 +54,16 @@ const clamp = (v: number, min = 0, max = 100) =>
 export function urgencyScore(wasteType: string): number {
   const t = wasteType.toLowerCase().trim()
 
-  // Fast path: exact match against the model's known classes
-  // (true for every report created from now on)
-  if (t in URGENCY_POLICY) {
+  // Fast path: exact match against the model's classes (all new reports).
+  // hasOwnProperty avoids false hits on inherited names like "constructor".
+  if (Object.prototype.hasOwnProperty.call(URGENCY_POLICY, t)) {
     return URGENCY_POLICY[t as WasteType]
   }
 
-  // Fallback: substring/alias matching for older free-text reports
+  // Fallback: substring/alias matching for older free-text reports.
+  // The highest match wins, so "medical plastic" scores as medical.
   const matches = [
-    ...CLASS_NAMES.filter(k => t.includes(k)).map(k => URGENCY_POLICY[k]),
+    ...CLASS_NAMES.filter((k) => t.includes(k)).map((k) => URGENCY_POLICY[k]),
     ...URGENCY_ALIASES.filter(([k]) => t.includes(k)).map(([, score]) => score),
   ]
   return matches.length ? Math.max(...matches) : DEFAULT_URGENCY
@@ -82,12 +83,12 @@ export function parseKg(amount: string): number {
   if (!m) return 0
   const lo = parseFloat(m[1])
   const hi = m[2] ? parseFloat(m[2]) : lo
-  const n = (lo + hi) / 2
+  const n = (lo + hi) / 2 // ranges use the midpoint
   const unit = m[3] ?? 'kg'
   if (/^(g|grams?)$/.test(unit)) return n / 1000
   if (/^(tons?|tonnes?)$/.test(unit)) return n * 1000
   if (/^(lbs?|pounds?)$/.test(unit)) return n * 0.4536
-  return n
+  return n // kg, liters, anything else: treated as kg
 }
 
 export function quantityScore(amount: string): number {

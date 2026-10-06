@@ -1,11 +1,16 @@
 "use client";
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useEffect, useRef } from "react";
 import { MapPin, Upload, CheckCircle, Loader } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 import { useJsApiLoader } from "@react-google-maps/api";
 import { Libraries } from "@react-google-maps/api";
-import { classifyWasteImage } from '@/utils/wasteClassifier'
+import {
+  classifyWasteImage,
+  MIN_CONFIDENCE,
+  MIN_MARGIN,
+} from "@/utils/wasteClassifier";
+import { parseKg } from "@/utils/priority";
 import {
   createUser,
   getUserByEmail,
@@ -57,8 +62,13 @@ export default function ReportPage() {
   } | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const autocompleteContainerRef = useRef<HTMLDivElement>(null);
-  const autocompleteElementRef = useRef<any>(null);
+  // Location suggestions (typed input + Google Places suggestions)
+  const [locationQuery, setLocationQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<
+    { id: string; text: string }[]
+  >([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const sessionTokenRef = useRef<any>(null);
 
   const { isLoaded } = useJsApiLoader({
     id: "google-map-script",
@@ -88,51 +98,59 @@ export default function ReportPage() {
     checkUser();
   }, [loggedIn]); // re-run once login completes, so `user` populates right after login
 
-  // Mount Google Places autocomplete once script is loaded
+  // Fetch location suggestions (debounced). Typing always works even if this fails.
   useEffect(() => {
-    if (!isLoaded || authLoading) return;
-    const container = autocompleteContainerRef.current;
-    if (!container) return;
-
+    const q = locationQuery.trim();
+    if (!isLoaded || q.length < 3) {
+      setSuggestions([]);
+      return;
+    }
     let cancelled = false;
-    let element: any;
-
-    const init = async () => {
-      const { PlaceAutocompleteElement } = await google.maps.importLibrary(
-        "places",
-      );
-      if (cancelled) return;
-
-      element = new PlaceAutocompleteElement();
-      element.id = "location-autocomplete";
-      element.style.colorScheme = "light";
-      element.style.backgroundColor = "#ffffff";
-      autocompleteElementRef.current = element;
-      container.appendChild(element);
-
-      element.addEventListener(
-        "gmp-select",
-        async (event: google.maps.places.PlacePredictionSelectEvent) => {
-          const prediction = event.placePrediction.toPlace();
-          const { place } = await prediction.fetchFields({
-            fields: ["formattedAddress"],
+    const timer = setTimeout(async () => {
+      try {
+        const { AutocompleteSuggestion, AutocompleteSessionToken } =
+          (await google.maps.importLibrary("places")) as any;
+        if (!sessionTokenRef.current) {
+          sessionTokenRef.current = new AutocompleteSessionToken();
+        }
+        const { suggestions: results } =
+          await AutocompleteSuggestion.fetchAutocompleteSuggestions({
+            input: q,
+            sessionToken: sessionTokenRef.current,
           });
-          setNewReport((prev) => ({
-            ...prev,
-            location: place.formattedAddress || "",
-          }));
-        },
-      );
-    };
-
-    init();
-
+        if (cancelled) return;
+        setSuggestions(
+          results
+            .filter((s: any) => s.placePrediction)
+            .map((s: any, i: number) => ({
+              id: s.placePrediction.placeId ?? String(i),
+              text: s.placePrediction.text.text as string,
+            })),
+        );
+      } catch (err) {
+        console.error("Location suggestions failed:", err);
+        setSuggestions([]);
+      }
+    }, 300);
     return () => {
       cancelled = true;
-      element?.remove();
-      autocompleteElementRef.current = null;
+      clearTimeout(timer);
     };
-  }, [isLoaded, authLoading]);
+  }, [locationQuery, isLoaded]);
+
+  const handleLocationChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setLocationQuery(value); // triggers suggestions
+    setNewReport((prev) => ({ ...prev, location: value })); // typed text counts
+    setShowSuggestions(true);
+  };
+
+  const selectSuggestion = (text: string) => {
+    setNewReport((prev) => ({ ...prev, location: text }));
+    setSuggestions([]);
+    setShowSuggestions(false);
+    sessionTokenRef.current = null; // start a new session after a selection
+  };
 
   const handleInputChange = (
     e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>,
@@ -145,6 +163,10 @@ export default function ReportPage() {
     if (e.target.files && e.target.files[0]) {
       const selectedFile = e.target.files[0];
       setFile(selectedFile);
+      // New photo -> old verification no longer applies
+      setVerificationStatus("idle");
+      setVerificationResult(null);
+      setNewReport((prev) => ({ ...prev, type: "", amount: "" }));
       const reader = new FileReader();
       reader.onload = (e) => {
         setPreview(e.target?.result as string);
@@ -162,7 +184,14 @@ export default function ReportPage() {
     });
   };
 
- const handleVerify = async () => {
+  const failVerification = (message: string) => {
+    setVerificationResult(null);
+    setNewReport((prev) => ({ ...prev, type: "", amount: "" }));
+    setVerificationStatus("failure");
+    toast.error(message);
+  };
+
+  const handleVerify = async () => {
     if (!loggedIn) {
       toast.error("Please log in to verify waste.");
       login();
@@ -172,15 +201,30 @@ export default function ReportPage() {
 
     setVerificationStatus("verifying");
 
+    // Step 1: classify the waste type on-device with the TF.js model
+    let classification;
     try {
-      const classification = await classifyWasteImage(file);
+      classification = await classifyWasteImage(file);
+    } catch (error) {
+      console.error("Waste classifier failed:", error);
+      failVerification(
+        "Couldn't run the waste classifier. Please refresh and try again.",
+      );
+      return;
+    }
 
-      if (classification.confidence < 0.5) {
-        setVerificationStatus("failure");
-        toast.error("Couldn't confidently identify waste in this image. Please upload a clearer photo.");
-        return;
-      }
+    if (
+      classification.confidence < MIN_CONFIDENCE ||
+      classification.margin < MIN_MARGIN
+    ) {
+      failVerification(
+        "Couldn't confidently identify waste in this image. Please upload a clearer photo of the waste.",
+      );
+      return;
+    }
 
+    // Step 2: estimate the quantity with Gemini (uses one API request)
+    try {
       const ai = new GoogleGenAI({ apiKey: geminiApiKey! });
       const base64Data = await readFileAsBase64(file);
 
@@ -204,7 +248,18 @@ export default function ReportPage() {
         ],
       });
 
-      const quantity = result.text?.trim() || "Unknown";
+      // Gemini answers "none" when the image isn't waste at all
+      const answer = (result.text ?? "").trim().toLowerCase();
+
+      // Normalise whatever the model said into a clean "X kg" string
+      const kg = parseKg(answer);
+      if (!(kg > 0)) {
+        failVerification(
+          "Couldn't estimate the amount of waste. Please try another photo.",
+        );
+        return;
+      }
+      const quantity = `${Math.max(0.1, Math.round(kg * 10) / 10)} kg`;
 
       const parsedResult = {
         wasteType: classification.wasteType,
@@ -214,16 +269,20 @@ export default function ReportPage() {
 
       setVerificationResult(parsedResult);
       setVerificationStatus("success");
-      setNewReport({
-        ...newReport,
+      setNewReport((prev) => ({
+        ...prev,
         type: parsedResult.wasteType,
         amount: parsedResult.quantity,
-      });
+      }));
     } catch (error) {
-      console.error("Error verifying waste:", error);
-      setVerificationStatus("failure");
+      console.error("Error estimating quantity:", error);
+      failVerification(
+        isQuotaError(error)
+          ? "Amount estimation has hit its daily limit. Please try again later."
+          : "Verification failed. Please try again.",
+      );
     }
-};
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -236,8 +295,8 @@ export default function ReportPage() {
       toast.error("Please verify the waste before submitting.");
       return;
     }
-    if (!newReport.location.trim()) {
-      toast.error("Please select a location from the suggestions.");
+    if (newReport.location.trim().length < 3) {
+      toast.error("Please enter the waste location (at least 3 characters).");
       return;
     }
     if (!newReport.type || !newReport.amount) {
@@ -268,6 +327,8 @@ export default function ReportPage() {
 
       setReports([formattedReport, ...reports]);
       setNewReport({ location: "", type: "", amount: "" });
+      setLocationQuery("");
+      setSuggestions([]);
       setFile(null);
       setPreview(null);
       setVerificationStatus("idle");
@@ -277,13 +338,8 @@ export default function ReportPage() {
         `Report submitted successfully! You've earned points for reporting waste.`,
       );
     } catch (error) {
-      console.error("Error verifying waste:", error);
-      if (isQuotaError(error)) {
-        toast.error(
-          "AI verification has hit its daily limit. Please try again later.",
-        );
-      }
-      setVerificationStatus("failure");
+      console.error("Error submitting report:", error);
+      toast.error("Failed to submit report. Please try again.");
     } finally {
       setIsSubmitting(false);
     }
@@ -300,7 +356,7 @@ export default function ReportPage() {
   return (
     <div className="p-8 max-w-4xl mx-auto">
       <h1 className="text-3xl font-semibold mb-6 text-gray-800">
-        Report waste
+        Report waste 
       </h1>
 
       {!loggedIn && (
@@ -409,47 +465,44 @@ export default function ReportPage() {
         )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
-          <div>
-            {isLoaded ? (
-              <div>
-                <label
-                  htmlFor="location"
-                  className="block text-sm font-medium text-gray-700 mb-1"
-                >
-                  Location
-                </label>
-                <div
-                  ref={autocompleteContainerRef}
-                  className={`[&_gmp-place-autocomplete]:w-full [&_gmp-place-autocomplete]:border [&_gmp-place-autocomplete]:border-gray-300 [&_gmp-place-autocomplete]:rounded-xl ${
-                    !loggedIn ? "opacity-50 pointer-events-none" : ""
-                  }`}
-                />
-                {newReport.location && (
-                  <p className="text-xs text-gray-500 mt-1">
-                    Selected: {newReport.location}
-                  </p>
-                )}
-              </div>
-            ) : (
-              <div>
-                <label
-                  htmlFor="location"
-                  className="block text-sm font-medium text-gray-700 mb-1"
-                >
-                  Location
-                </label>
-                <input
-                  type="text"
-                  id="location"
-                  name="location"
-                  value={newReport.location}
-                  onChange={handleInputChange}
-                  required
-                  disabled={!loggedIn}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 disabled:opacity-50"
-                  placeholder="Enter waste location"
-                />
-              </div>
+          <div className="relative">
+            <label
+              htmlFor="location"
+              className="block text-sm font-medium text-gray-700 mb-1"
+            >
+              Location <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              id="location"
+              name="location"
+              value={newReport.location}
+              onChange={handleLocationChange}
+              onFocus={() => setShowSuggestions(true)}
+              onBlur={() => setShowSuggestions(false)}
+              disabled={!loggedIn}
+              autoComplete="off"
+              className="w-full px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-green-500 transition-all duration-300 disabled:opacity-50"
+              placeholder="Search or type the waste location"
+            />
+            {showSuggestions && suggestions.length > 0 && (
+              <ul className="absolute z-20 mt-1 w-full bg-white border border-gray-200 rounded-xl shadow-lg max-h-60 overflow-auto">
+                {suggestions.map((s) => (
+                  <li key={s.id}>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault(); // keep focus so onBlur doesn't hide the list first
+                        selectSuggestion(s.text);
+                      }}
+                      className="w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center"
+                    >
+                      <MapPin className="w-4 h-4 mr-2 text-green-500 shrink-0" />
+                      {s.text}
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
           <div>
@@ -499,7 +552,7 @@ export default function ReportPage() {
           disabled={
             isSubmitting ||
             !loggedIn ||
-            !newReport.location ||
+            newReport.location.trim().length < 3 ||
             !newReport.type ||
             !newReport.amount
           }
@@ -510,7 +563,7 @@ export default function ReportPage() {
               Submitting...
             </>
           ) : (
-            "Report"
+            "Submit Report"
           )}
         </Button>
       </form>
