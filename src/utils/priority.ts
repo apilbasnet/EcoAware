@@ -1,4 +1,6 @@
-import { WASTE_TYPES, WasteType } from './Wastecategories'
+import { CLASS_NAMES } from './wasteClassifier'
+
+export type WasteType = (typeof CLASS_NAMES)[number]
 
 export type PriorityTask = {
   wasteType: string
@@ -10,30 +12,35 @@ export type PriorityTask = {
 // Weights (project-design choice, must sum to 1)
 export const PRIORITY_WEIGHTS = { urgency: 0.5, age: 0.3, quantity: 0.2 }
 
-// Operational policy: urgency per waste category (0-100)
 export const URGENCY_POLICY: Record<WasteType, number> = {
-  hazardous: 100,
-  medical: 100,
-  'e-waste': 80,
-  organic: 60,
-  metal: 50,
-  glass: 50,
-  plastic: 40,
+  battery: 100,        // hazardous material — highest priority
+  biological: 60,      // organic/food waste — decomposes, attracts pests
+  'brown-glass': 50,
+  'green-glass': 50,
+  'white-glass': 50,
+  cardboard: 30,
   paper: 30,
+  clothes: 20,         // textile — low urgency, slow to degrade/smell
+  shoes: 20,
+  metal: 50,
+  plastic: 40,
+  trash: 50,           // unidentified/mixed — treat as medium by default
 }
 const DEFAULT_URGENCY = 50
 
-// Aliases so older free-text reports (before categories were fixed) still map correctly
-const URGENCY_ALIASES: [keyword: string, category: WasteType][] = [
-  ['chemical', 'hazardous'],
-  ['toxic', 'hazardous'],
-  ['battery', 'hazardous'],
-  ['biomedical', 'medical'],
-  ['syringe', 'medical'],
-  ['hospital', 'medical'],
-  ['electronic', 'e-waste'],
-  ['ewaste', 'e-waste'],
-  ['e waste', 'e-waste'],
+const URGENCY_ALIASES: [keyword: string, score: number][] = [
+  ['chemical', 100],
+  ['toxic', 100],
+  ['hazardous', 100],
+  ['medical', 100],
+  ['biomedical', 100],
+  ['syringe', 100],
+  ['hospital', 100],
+  ['electronic', 80],
+  ['ewaste', 80],
+  ['e-waste', 80],
+  ['e waste', 80],
+  ['organic', 60],
 ]
 
 // Configurable bounds
@@ -45,10 +52,18 @@ const clamp = (v: number, min = 0, max = 100) =>
   Number.isNaN(v) ? min : Math.min(max, Math.max(min, v))
 
 export function urgencyScore(wasteType: string): number {
-  const t = wasteType.toLowerCase()
+  const t = wasteType.toLowerCase().trim()
+
+  // Fast path: exact match against the model's known classes
+  // (true for every report created from now on)
+  if (t in URGENCY_POLICY) {
+    return URGENCY_POLICY[t as WasteType]
+  }
+
+  // Fallback: substring/alias matching for older free-text reports
   const matches = [
-    ...WASTE_TYPES.filter(k => t.includes(k)).map(k => URGENCY_POLICY[k]),
-    ...URGENCY_ALIASES.filter(([k]) => t.includes(k)).map(([, c]) => URGENCY_POLICY[c]),
+    ...CLASS_NAMES.filter(k => t.includes(k)).map(k => URGENCY_POLICY[k]),
+    ...URGENCY_ALIASES.filter(([k]) => t.includes(k)).map(([, score]) => score),
   ]
   return matches.length ? Math.max(...matches) : DEFAULT_URGENCY
 }
@@ -67,12 +82,12 @@ export function parseKg(amount: string): number {
   if (!m) return 0
   const lo = parseFloat(m[1])
   const hi = m[2] ? parseFloat(m[2]) : lo
-  const n = (lo + hi) / 2 // ranges use the midpoint
+  const n = (lo + hi) / 2
   const unit = m[3] ?? 'kg'
   if (/^(g|grams?)$/.test(unit)) return n / 1000
   if (/^(tons?|tonnes?)$/.test(unit)) return n * 1000
   if (/^(lbs?|pounds?)$/.test(unit)) return n * 0.4536
-  return n // kg, liters, anything else: treated as kg
+  return n
 }
 
 export function quantityScore(amount: string): number {

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { GoogleGenAI, Type } from "@google/genai";
 import { useJsApiLoader } from "@react-google-maps/api";
 import { Libraries } from "@react-google-maps/api";
-import { WASTE_TYPES } from "@/utils/Wastecategories";
+import { classifyWasteImage } from '@/utils/wasteClassifier'
 import {
   createUser,
   getUserByEmail,
@@ -162,7 +162,7 @@ export default function ReportPage() {
     });
   };
 
-  const handleVerify = async () => {
+ const handleVerify = async () => {
     if (!loggedIn) {
       toast.error("Please log in to verify waste.");
       login();
@@ -173,24 +173,26 @@ export default function ReportPage() {
     setVerificationStatus("verifying");
 
     try {
-      const ai = new GoogleGenAI({ apiKey: geminiApiKey! });
+      const classification = await classifyWasteImage(file);
 
+      if (classification.confidence < 0.5) {
+        setVerificationStatus("failure");
+        toast.error("Couldn't confidently identify waste in this image. Please upload a clearer photo.");
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey: geminiApiKey! });
       const base64Data = await readFileAsBase64(file);
-      const prompt = `You are an expert in waste management and recycling. Analyze this image and provide:
-  1. The waste category. It must be exactly one of: ${WASTE_TYPES.join(", ")}.
-     Use "hazardous" for chemicals, batteries, paint, pesticides, or other toxic items.
-     Use "medical" for syringes, bandages, medicines, or other clinical waste.
-     Use "e-waste" for phones, cables, appliances, and other electronics.
-     If the image does not clearly show waste or discarded items (for example people, animals, scenery, screenshots, or clean objects), answer "none".
-  2. An estimate of the quantity as a single number in kg, for example "2.5 kg" (use "0 kg" if the answer is "none")
-  3. Your confidence level in this assessment (as a number between 0 and 1)`;
+
+      const quantityPrompt = `This image has been classified as "${classification.wasteType}" waste.
+      Estimate the quantity or amount of this waste in kg or liters. Respond with just the estimate, e.g. "2.5 kg".`;
 
       const result = await generateWithFallback(ai, {
         contents: [
           {
             role: "user",
             parts: [
-              { text: prompt },
+              { text: quantityPrompt },
               {
                 inlineData: {
                   mimeType: file.type,
@@ -200,70 +202,28 @@ export default function ReportPage() {
             ],
           },
         ],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              wasteType: {
-                type: Type.STRING,
-                format: "enum",
-                enum: [...WASTE_TYPES],
-              },
-              quantity: { type: Type.STRING },
-              confidence: { type: Type.NUMBER },
-            },
-            required: ["wasteType", "quantity", "confidence"],
-          },
-        },
       });
 
-      const text = result.text;
+      const quantity = result.text?.trim() || "Unknown";
 
-      try {
-        const parsedResult = JSON.parse(text!);
+      const parsedResult = {
+        wasteType: classification.wasteType,
+        quantity,
+        confidence: classification.confidence,
+      };
 
-        const isValidWaste =
-          parsedResult.wasteType &&
-          parsedResult.wasteType.toLowerCase() !== "none" &&
-          parseFloat(parsedResult.quantity) > 0 &&
-          typeof parsedResult.confidence === "number" &&
-          parsedResult.confidence > 0.5;
-
-        if (isValidWaste) {
-          setVerificationResult(parsedResult);
-          setVerificationStatus("success");
-          setNewReport({
-            ...newReport,
-            type: parsedResult.wasteType,
-            amount: parsedResult.quantity,
-          });
-        } else {
-          console.error(
-            "Image does not appear to show identifiable waste:",
-            parsedResult,
-          );
-          setVerificationResult(null);
-          setNewReport((prev) => ({ ...prev, type: "", amount: "" }));
-          setVerificationStatus("failure");
-          toast.error(
-            "Couldn't identify waste in this image. Please upload a clearer photo of the waste.",
-          );
-        }
-      } catch (error) {
-        console.error("Failed to parse JSON response:", text);
-        setVerificationStatus("failure");
-      }
+      setVerificationResult(parsedResult);
+      setVerificationStatus("success");
+      setNewReport({
+        ...newReport,
+        type: parsedResult.wasteType,
+        amount: parsedResult.quantity,
+      });
     } catch (error) {
       console.error("Error verifying waste:", error);
-      toast.error(
-        isQuotaError(error)
-          ? "AI verification has hit its daily limit. Please try again later."
-          : "Verification failed. Please try again.",
-      );
       setVerificationStatus("failure");
     }
-  };
+};
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
